@@ -1,0 +1,4 @@
+name = "model"
+uuid = "8ffd7075-fc09-455e-8a25-f300a149cd16"
+authors = ["seb <se-l@gmx.de>"]
+version = "0.1.0"
