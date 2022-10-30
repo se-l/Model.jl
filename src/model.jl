@@ -1,5 +1,5 @@
-module model
+module Model
 
 greet() = print("Hello World!")
 
-end # module model
+end # module Model

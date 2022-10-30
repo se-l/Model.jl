@@ -1,4 +1,4 @@
-name = "model"
-uuid = "8ffd7075-fc09-455e-8a25-f300a149cd16"
+name = "Model"
+uuid = "ecf4bd84-2f8f-4710-b68e-fca4bade9819"
 authors = ["seb <se-l@gmx.de>"]
 version = "0.1.0"
