@@ -2,7 +2,8 @@ import datetime
 import os
 import pickle
 import pandas as pd
-import lightgbm as lgb
+# import lightgbm as lgb
+import optuna.integration.lightgbm as lgb
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -93,10 +94,10 @@ class EstimateSide(EstimateBase):
             os.mkdir(os.path.join(Paths.trade_model, self.ex))
         except:
             pass
-        with open(os.path.join(Paths.trade_model, self.ex, 'return_val.p'), 'wb') as f:
-            pickle.dump(self.ps_label_return.iloc[:n_cv], f)
-        with open(os.path.join(Paths.trade_model, self.ex, 'return_ho.p'), 'wb') as f:
-            pickle.dump(self.ps_label_return.iloc[-n_ho:], f)
+        # with open(os.path.join(Paths.trade_model, self.ex, 'return_val.p'), 'wb') as f:
+        #     pickle.dump(self.ps_label_return.iloc[:n_cv], f)
+        # with open(os.path.join(Paths.trade_model, self.ex, 'return_ho.p'), 'wb') as f:
+        #     pickle.dump(self.ps_label_return.iloc[-n_ho:], f)
 
     def train(self):
         self.split_ho()
@@ -124,6 +125,17 @@ class EstimateSide(EstimateBase):
             x_train, x_test = self.df.iloc[train_index], self.df.iloc[test_index]
             y_train, y_test = self.ps_label.iloc[train_index], self.ps_label.iloc[test_index]
             dataset_train = lgb.Dataset(x_train, label=y_train, weight=arr_weight[train_index])
+            lgb.train({'objective': 'multiclass',
+                         'verbosity': 0,
+                         'learning_rate': 0.1,
+                         'num_class': 3,
+                         'boosting_type': 'gbdt',
+                         'num_iterations': 1000,
+                         'device': 'gpu'},
+                      train_set=dataset_train,
+                      valid_sets=[lgb.Dataset(x_test, label=y_test, weight=arr_weight[test_index]), dataset_train],
+                      valid_names=['valid_0', 'valid_train'],
+                      )
             lgb_booster = lgb.train(estimator_params,
                                     train_set=dataset_train,
                                     valid_sets=[lgb.Dataset(x_test, label=y_test, weight=arr_weight[test_index]), dataset_train],
@@ -205,7 +217,7 @@ if __name__ == '__main__':
     exchange = Exchange.bitfinex
     sym = Assets.ethusd
     start = datetime.datetime(2022, 2, 7)
-    end = datetime.datetime(2022, 3, 13)
+    end = datetime.datetime(2022, 2, 13)
 
     inst = EstimateSide(
         sym=sym,
