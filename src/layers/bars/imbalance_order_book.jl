@@ -1,21 +1,9 @@
 using Dates
-using PyCall
 using DataFrames
 using IterTools
 
 import YAML
-
-import .OrderBook
-import .Client
-import .path_common
-import .path_layers
-
-datetime = pyimport("datetime")
-np = pyimport("numpy")
-
-push!(pyimport("sys")."path", root)
-push!(pyimport("sys")."path", joinpath(path_layers, "raw"))
-BitfinexReader = pyimport("bitfinex_reader").BitfinexReader
+import .Exchange, .Asset, .OrderBook, .Client, .path_common, .path_layers
 
 function ix_every_delta(arr, delta)  # no NANs here.
     cumsum_ = vcat([0], cumsum(arr[1:end-1] - arr[2:end]))
@@ -61,7 +49,7 @@ function derive_events(dfo, level)
     book .= missing
     for side in [-1, 1]
         for i_level in 1:level
-            # println("$(side) - $(i_level)")
+            # @info("$(side) - $(i_level)")
             v_has_values = (df.side.==side) .& (df.level.==i_level)
             if sum(v_has_values) > 0
                 ix_ts = [map_ts[ts] for ts in df.timestamp[v_has_values]]
@@ -79,21 +67,23 @@ infer_level_distance(prices) = minimum([el for el in abs.(prices[2:end] - prices
 
 
 function save_order_book_metrics()
-    println("Threads: $(Threads.nthreads())")
+    @info("Threads: $(Threads.nthreads())")
     @time begin
     settings = YAML.load_file(path_layer_settings)
     for exchange in keys(settings)
+        exchange = tryparse(Exchange.T, exchange)
         # exchange="bitfinex"
         # asset="btcusd"
         # asset="ethusd"
         # i=0
         # params = settings[exchange][asset]
-        println("$(exchange)")
+        @info("$(exchange)")
         for (asset, params) in pairs(settings[exchange])
-            if !(asset in ["solusd"])
+            asset = tryparse(Asset.T, asset)
+            if !(asset in [Asset.solusd])
                 continue
             end
-            println("Loading order book for $(exchange) - $(asset)")
+            @info("Loading order book for $(exchange) - $(asset)")
             params = get(params, "order book", Dict())
             delta_size_ratio = get(params, "delta_size_ratio", 0)
             # start = Date(2022, 2, 7)
@@ -107,32 +97,22 @@ function save_order_book_metrics()
             # Threads.@threads for i = 0:Dates.value(end_ - start)
             for i = 0:Dates.value(end_ - start)
                 dt = datetime.datetime.fromisoformat(string(start)) + datetime.timedelta(days=i)
-                println("Running $(asset) - $(dt) - ThreadL $(Threads.threadid())")
-                df_py = BitfinexReader.load_quotes(asset, dt, dt)
-                if df_py === nothing
-                    continue
-                end
-                df = DataFrame(
-                    timestamp=Nanosecond.(df_py.get("timestamp").astype(np.int64)) + DateTime(1970),
-                    price=df_py.get("price").values,
-                    size=df_py.get("size").values,
-                    count=df_py.get("count").values,
-                    side=df_py.get("side").values,
-                )
+                @info("Running $(asset) - $(dt) - ThreadL $(Threads.threadid())")
+                df = BitfinexReader.load_quotes(asset, dt, dt)
                 level_distance = infer_level_distance(df.price)
-                println("Level Distance $(asset): $(level_distance)")
+                @info("Level Distance $(asset): $(level_distance)")
                 level_from_price_haircut = params["level_from_price_haircut"]
                 level = convert(Int, round(level_from_price_haircut * df.price[1] / level_distance))
-                println("OrderBook levels $(level)")
+                @info("OrderBook levels $(level)")
                 ob = OrderBook.Book(df, level_distance)
-                println("$(asset) - Summarizing $(level) order book levels")
+                @info("$(asset) - Summarizing $(level) order book levels")
                 df = OrderBook.create_order_book!(ob)
                 arr, v_ts = derive_events(df, level)
 
                 ix_valid = 1
                 for (side, level) in product(1:2, 1:level)
                     # ts, side, level, [count/size]
-                    # println("Side: $(side) - Level: $(level)")
+                    # @info("Side: $(side) - Level: $(level)")
                     # Forward fill across time
                     arr[:, side, level, 1] = ffill(arr[:, side, level, 1])
                     arr[:, side, level, 2] = ffill(arr[:, side, level, 2])
@@ -167,10 +147,10 @@ function save_order_book_metrics()
                 v_size_net = m_size[:, 1] + m_size[:, 2]  # bid - ask
                 v_count_net = m_count[:, 1] - m_count[:, 2]  # bid - ask
                 
-                # println("Get Delta steps ...")
+                # @info("Get Delta steps ...")
                 ix_events, actual_deltas = ix_every_delta(v_size_ratio, delta_size_ratio)
                 v_ts = v_ts[ix_events]
-                println("Ingesting Size, Count Ratios and Net from total $(length(v_size_ratio)), 
+                @info("Ingesting Size, Count Ratios and Net from total $(length(v_size_ratio)), 
                         reduced to # events $(length(v_ts)) -> # unique events/ts: $(length(ix_events))")
                 # somehow need to ensure here only 1 value per timestamp
                 for (information, v) in pairs(Dict(
@@ -180,7 +160,7 @@ function save_order_book_metrics()
                     "bid_buy_count_imbalance_net" => v_count_net,
                 ))
                     vec = v[ix_events]
-                    # println("$(information) - len: $(length(vec)) - sum: $(sum(vec))")
+                    # @info("$(information) - len: $(length(vec)) - sum: $(sum(vec))")
                     Client.upsert(
                         Dict(
                             "measurement_name" => "order book",
@@ -197,7 +177,7 @@ function save_order_book_metrics()
             end
         end
     end
-    println("Done")
+    @info("Done")
 end
 end
 

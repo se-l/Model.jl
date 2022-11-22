@@ -5,7 +5,7 @@ function sample_events(v::Array{Real}; max_events=missing, thresholds=(-3, 3), m
     if method == "std"
         threshold = std(v) * thresholds[end]
         ix = findall(x -> x >= threshold, abs.(v2))
-        println("Sampling $(size(ix)) events")
+        @info("Sampling $(size(ix)) events")
         return size(ix) > max_events ? [] : ix
     end
 end

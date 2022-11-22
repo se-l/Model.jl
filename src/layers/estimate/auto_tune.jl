@@ -6,7 +6,9 @@ using Plots
 using LightGBM
 using Hyperopt
 # using Distributed
+using Statistics
 import ScikitLearn.CrossValidation: KFold
+using PlotlyJS
 
 
 function optimize(
@@ -28,7 +30,7 @@ function optimize(
     GC.gc()
     feature_names = filter((x)-> x != "ts", names(df_t))
 
-    println("Splitting df into $(n_cv_folds) datasets")
+    @info("Splitting df into $(n_cv_folds) datasets")
     vds_tr = []
     vx_te = []
     vy_te = []
@@ -46,7 +48,7 @@ function optimize(
         push!(vy_te, y_t[ix_te])
     end
 
-    println("Optimizing df of shape: $(size(df_t))")
+    @info("Optimizing df of shape: $(size(df_t))")
     ho = @hyperopt for i=n_trials,
         sampler = RandomSampler(),
         learning_rate = LinRange(0.001, 0.003, 2),
@@ -69,6 +71,16 @@ function optimize(
     return ho
 end
 
+function ana()
+    histogram(df[:, fs][:, 1])
+    histogram(y)
+    f = df_imp[:, :feature][1]
+    df_f = df[:, f]
+    q_low, q_high = quantile(df_f, 0.05), quantile(df_f, 0.95)
+    v_ix = findall(x -> x >= q_high || x <= q_low, df_f)
+    PlotlyJS.plot(histogram2d(x=y[v_ix], y=df_f[v_ix], title=f))
+end
+
 function train_predict(df::DataFrame, y::Vector{Float64}; f_partition=0.7)
     ix_tr, ix_te = MLJ.partition(1:size(df)[1], f_partition, shuffle=false)
     
@@ -76,8 +88,8 @@ function train_predict(df::DataFrame, y::Vector{Float64}; f_partition=0.7)
         objective = "regression",
         metric = ["l2"],
         # early_stopping_round = 5,
-        num_iterations = 2,
-        max_depth=11,
+        num_iterations = 5,
+        max_depth=-1,
         learning_rate = 0.003,
         feature_fraction = 0.8,
         bagging_fraction = 0.5375,
@@ -89,18 +101,92 @@ function train_predict(df::DataFrame, y::Vector{Float64}; f_partition=0.7)
         min_gain_to_split=0,
         device_type = "gpu",
     )
-    LightGBM.fit!(estimator, Matrix(df[ix_tr, Not(:ts)]), y[ix_tr], weights=return_attribution_sample_weights(y[ix_tr]), verbosity=10)
-    eval_metrics(
-        yh_tr = LightGBM.predict(estimator, Matrix(df[ix_tr, Not(:ts)]))[:, 1],
-        y_tr  = y[ix_tr],
-        w_tr  = return_attribution_sample_weights(y[ix_tr]),
-        yh_te = LightGBM.predict(estimator, Matrix(df[ix_te, Not(:ts)]))[:, 1],
-        y_te  = y[ix_te],
-        w_te  = return_attribution_sample_weights(y[ix_te]),
-    )
+    fs = names(df[:, Not(:ts)])
+    w_tr = return_attribution_sample_weights(y[ix_tr])
+    y_tr = (y[ix_tr])# .-1).*w_tr .+ 1
+    w_te  = return_attribution_sample_weights(y[ix_te])
+    y_te = (y[ix_te])# .-1).*w_te .+ 1
+    y_trm = mean(y_tr)
+    y_tem = mean(y_te)
+
+    LightGBM.fit!(estimator, Matrix(df[ix_tr, fs]), y[ix_tr], weights=w_tr, verbosity=10)
+    LightGBM.fit!(estimator, Matrix(df[ix_tr, fs]), y_tr, verbosity=10)
+    # eval_metrics(
+    yh_tr = LightGBM.predict(estimator, Matrix(df[ix_tr, fs]))[:, 1]
+    yh_te = LightGBM.predict(estimator, Matrix(df[ix_te, fs]))[:, 1]
+    # )
+    
+    df_imp = DataFrame(zip(names(df[:, Not(:ts)]), LightGBM.gain_importance(estimator), LightGBM.split_importance(estimator)))
+    rename!(df_imp, [Pair(:1, :feature), Pair(:2, :gain),  Pair(:3, :split)])
+    sort!(df_imp, :gain, rev=true)
+    sort!(df_imp, :split, rev=true)
+    sum(df_imp[:, :gain])
+    sum(df_imp[1:15, :gain])
+
+    fs = df_imp[1:3, :feature][1:1]
+
+    histogram(w_tr .* sign.(y_tr .- 1) )
+    p = histogram(y_tr)
+    p = histogram(y_te)
+    p = histogram(yh_tr)
+    p = histogram(yh_te)
+    display(p)
+
+    # 1. New check - are tr and te on same side of the mean. Train Yes, 
+        # Test: No - Learnt anything? Learnt nothing!
+    # 2. Plot tree splits. Understand feature importance, 
+    #   underlying cause => Enhance.
+    LightGBM.savemodel(estimator, joinpath(path_temp, "booster.lgb"))
+
+    q_low, q_high = quantile(yh_tr, 0.01), quantile(yh_tr, 0.99)
+
+    vq_high_ix = findall(x -> x >= q_high, yh_tr)
+    vqh_high_tr =yh_tr[vq_high_ix]
+    vq_high_t =y_tr[vq_high_ix]
+    sum((vq_high_t .< y_trm) .==  (vqh_high_tr .< y_trm)) / length(vq_high_ix)
+    # 0.998
+
+    vq_low_ix = findall(x->x<=q_low, yh_tr)
+    vqh_low_tr =yh_tr[vq_low_ix]
+    vq_low_t =y_tr[vq_low_ix]
+    sum((vq_low_t .> y_trm) .==  (vqh_low_tr .> y_trm)) / length(vq_low_ix)
+    # 0.992
+
+    q_low, q_high = quantile(yh_te, 0.01), quantile(yh_te, 0.99)
+
+    vq_high_ix = findall(x -> x >= q_high, yh_te)
+    vqh_high_tr =yh_te[vq_high_ix]
+    vq_high_t =y_te[vq_high_ix]
+    # histogram(vq_high_t)
+    sum((vq_high_t .> y_tem) .& (vqh_high_tr .> y_tem)) / length(vq_high_ix)
+    # 0.42
+
+    vq_low_ix = findall(x -> x <= q_low, yh_te)
+    vqh_low_tr =yh_te[vq_low_ix]
+    vq_low_t =y_te[vq_low_ix]
+    histogram(vqh_low_tr)
+    histogram(vq_low_t)
+    sum((vq_low_t .< y_tem) .&  (vqh_low_tr .< y_tem)) / length(vq_low_ix)
+    # 0.31
+
+    sum((yh_tr .> 1) .==  (y_tr .> 1)) / size(y_tr)[1]
+    sum((yh_te .> 1) .==  (y_te .> 1)) / size(y_te)[1]
+    sum((yh_te .< 0.995) .==  (y_te .> 1)) / size(y_te)[1]
+    sum((yh_te .< 0.995) .==  (y_te .> 1)) / size(y_te)[1]
 end
 
 function eval_metrics(;yh_tr, y_tr, w_tr, yh_te, y_te, w_te)
+    """
+    The loss function is not realistic. 
+        - Punish opposite side Error heavily
+        - Almost no punishment for predicting same side, coz no loss
+        - Punish missed out opportunity? -> Encourage taking sides... as long as it's the right one...
+
+    Apparently, frequently opportunity does not lead to high reward, may be on right side though.
+    """
+    l2(yh_tr, y_tr) |> mean  # .0005266576406430649
+    l2(ones(size(yh_tr)), y_tr) |> mean
+
     l2(yh_tr, y_tr, w_tr) |> mean  # .0005266576406430649
     l2(ones(size(yh_tr)), y_tr, w_tr) |> mean
     l1(yh_tr, y_tr, w_tr) |> mean
@@ -110,6 +196,9 @@ function eval_metrics(;yh_tr, y_tr, w_tr, yh_te, y_te, w_te)
     l2(ones(size(y_te)), y_te, w_te) |> mean
     l1(yh_te, y_te, w_te) |> mean
     l1(ones(size(y_te)), y_te, w_te) |> mean
+
+    minimum(y_tr)
+    maximum(y_tr)
 
     minimum(yh_tr)
     maximum(yh_tr)
@@ -179,11 +268,11 @@ end
 
 #         # replace with passing err function
 #         weighted_err = MLJ.l2(yh_te, y_te, w_te) |> mean
-#         println("Weighted Error on Test; CV: $(i); Iteration $(iteration): $(weighted_err)")
+#         @info("Weighted Error on Test; CV: $(i); Iteration $(iteration): $(weighted_err)")
 #         push!(v_err, weighted_err)
 #         min_, ix_min = findmin(v_err)
 #         if ix_min + early_stopping_round <= iteration
-#             println("Stopping at iteration $(ix_min). Best iteration: $(ix_min)")
+#             @info("Stopping at iteration $(ix_min). Best iteration: $(ix_min)")
 #             break
 #         end
 #     end
@@ -219,21 +308,21 @@ end
 
 function present(ho::Hyperoptimizer)
     best_params, min_f = ho.minimizer, ho.minimum
-    println("$(best_params)")
-    println("min_f: $(min_f)")
-    println(ho)
+    @info("$(best_params)")
+    @info("min_f: $(min_f)")
+    @info(ho)
     plot(ho)
 end
 
 
 function test_optimize(;from_disk=true)
     exchange = "bitfinex"
-    sym = "ethusd"
-    ex = get_ex(sym=sym)
+    sym = Asset.ethusd
+    ex = get_ex(sym)
     start = Date(2022, 2, 7)
     # stop = Date(2022, 2, 13)
     stop = Date(2022, 9, 3)
-    println("From $(start) to $(stop)")
+    @info("From $(start) to $(stop)")
     
     if !from_disk
         df, y = load_inputs(exchange, sym, start, stop)
@@ -246,7 +335,7 @@ function test_optimize(;from_disk=true)
     ho = optimize(df, y, n_trials=100, n_processes=0, f_partition=0.4)::Hyperoptimizer
     save(ho)
     present(ho)
-    println("Done.")
+    @info("Done.")
     return ho
     #     minimum / maximum: (7.697964987407978e-5, 1.0)
     #   minimizer:

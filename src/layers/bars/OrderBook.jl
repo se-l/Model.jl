@@ -1,8 +1,6 @@
 module OrderBook
 
 using DataFrames
-using PyCall
-
 import ..ffill, ..isna, ..bfill
 
 mutable struct Book
@@ -22,7 +20,7 @@ end
 # end
 
 
-function create_order_book!(order_book)
+function create_order_book!(order_book)::DataFrame
     df = order_book.df_quotes
     # assert sorted(df.side.unique()) == [-1, 1], "Side is not fully determined. Infer from BBAB and price"
     # Count may only be availbe with Bitfinex at the moment. Enrich if necessary. Emptied levels, count 0, mean to be ignore for best bid determination, but
@@ -52,13 +50,13 @@ function create_order_book!(order_book)
 
     # assert df.isna().sum().sum() == 0, "NANs at this step. why?"
     # assert (df.best_ask < df.best_bid).sum() == 0
-    println("Null price rows: $(sum(isna(df.price)))")
+    @info("Null price rows: $(sum(isna(df.price)))")
 
     # Add Level
     ix_drop_no_level_land = findall((df.best_bid .< df.price) .& (df.price .< df.best_ask))
     # ix_drop_no_level_land = df.index[np.where((df.best_bid < df.price) & (df.price < df.best_ask))]
     if length(ix_drop_no_level_land) > 0
-        println("Dropping $(length(ix_drop_no_level_land)) order book levels that are in between best ask and best bid.")
+        @info("Dropping $(length(ix_drop_no_level_land)) order book levels that are in between best ask and best bid.")
         df = df[Not(ix_drop_no_level_land), :]
     end
 
@@ -70,7 +68,7 @@ function create_order_book!(order_book)
     v_wrong_side_ask = (df.side .== -1) .& (df.price .< df.best_ask)
     v_wrong_side_bid = (df.side .== 1) .& (df.price .> df.best_bid)
     if sum(v_wrong_side_bid) + sum(v_wrong_side_ask) > 0
-        println("Reassigning Inconsistent / Wrong side level BID: $(sum(v_wrong_side_bid)) - ASK: $(sum(v_wrong_side_ask)). Investigate if inconsistency count is high ")
+        @info("Reassigning Inconsistent / Wrong side level BID: $(sum(v_wrong_side_bid)) - ASK: $(sum(v_wrong_side_ask)). Investigate if inconsistency count is high ")
         df[v_wrong_side_bid, :"side"] *= -1
         df[v_wrong_side_ask, :"side"] *= -1
     end
@@ -91,14 +89,14 @@ function create_order_book!(order_book)
     return df
 end
 
-function impute_missing_count!(df::DataFrame)
+function impute_missing_count!(df::DataFrame)::DataFrame
     if sum(isna(df.count)) > 0
         ix_zero = isna(df.count) .& (abs.(df.size) .== 1)
         df[ix_zero, :"count"] .= 0
 
         ix_non_zero = isna(df.count) .& (abs.(df.size) .!= 1)
         df[ix_non_zero, :"count"] .= 1
-        println("Imputed $(sum(ix_zero) + sum(ix_non_zero)) count values.")
+        @info("Imputed $(sum(ix_zero) + sum(ix_non_zero)) count values.")
         return df
     else
         return df
@@ -169,10 +167,10 @@ function apply_best_bid_ask(price:: Vector, side:: Vector, size:: Vector)
         best_bids[i] = bbid
         best_asks[i] = bask
         if i % 1000000 == 0
-            println(i)
+            @info(i)
         end
     end
     return best_bids, best_asks
 end
 
-end
+end  # module
